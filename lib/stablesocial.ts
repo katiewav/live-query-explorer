@@ -1,4 +1,9 @@
-import { execSync } from "child_process";
+import { createWalletClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { base } from "viem/chains";
+import { x402Client, x402HTTPClient } from "@x402/core/client";
+import { ExactEvmScheme, toClientEvmSigner } from "@x402/evm";
+import { createSIWxClientHook } from "@x402/extensions";
 import { cacheGet, cacheSet } from "./cache";
 import type {
   RedditPost,
@@ -11,62 +16,139 @@ import type {
   TikTokResult,
 } from "@/types";
 
-const BASE = "https://stablesocial.dev";
+const BASE_URL = "https://stablesocial.dev";
 const POLL_INTERVAL = 3000;
 const MAX_POLL_ATTEMPTS = 20;
 
-// ── agentcash CLI wrapper ──
+// ── Wallet + x402 client setup ──
 
-function agentcashPath(): string {
-  // npx resolves through PATH; we use execSync for server-side calls
-  return "npx agentcash@latest";
+function getPrivateKey(): `0x${string}` {
+  const key = process.env.AGENTCASH_PRIVATE_KEY;
+  if (!key) throw new Error("AGENTCASH_PRIVATE_KEY env var is required for live API calls");
+  return key.startsWith("0x") ? (key as `0x${string}`) : (`0x${key}` as `0x${string}`);
 }
 
-function npxPrefix(): string {
-  // Ensure homebrew node is on PATH for child processes
-  return 'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && ';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _httpClient: any = null;
+
+function getHTTPClient(): x402HTTPClient {
+  if (!_httpClient) {
+    const account = privateKeyToAccount(getPrivateKey());
+    const wallet = createWalletClient({
+      account,
+      chain: base,
+      transport: http(),
+    });
+    // toClientEvmSigner expects a wallet client with account
+    const signer = toClientEvmSigner(wallet as never);
+    const scheme = new ExactEvmScheme(signer);
+    const client = new x402Client();
+    // Register scheme for both v2 (CAIP-2) and v1 network identifiers
+    client.register("eip155:8453", scheme);
+    client.registerV1("base", scheme);
+    // Also register for Tempo network
+    client.register("eip155:98865", scheme);
+    client.registerV1("tempo", scheme);
+    _httpClient = new x402HTTPClient(client);
+    // Register SIWX hook for poll endpoint auth
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _httpClient.onPaymentRequired(createSIWxClientHook(signer as any));
+  }
+  return _httpClient as x402HTTPClient;
 }
+
+// ── x402 fetch wrapper ──
+
+async function x402Fetch(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const httpClient = getHTTPClient();
+
+  // Step 1: Make initial request
+  let res = await fetch(url, {
+    ...options,
+    headers: { ...options.headers, "Content-Type": "application/json" },
+  });
+
+  // Step 2: Handle 402 Payment Required
+  if (res.status === 402) {
+    const getHeader = (name: string) => res.headers.get(name);
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      // body may not be JSON
+    }
+
+    // Try SIWX first (for poll endpoints), then x402 payment
+    const paymentRequired = httpClient.getPaymentRequiredResponse(getHeader, body);
+    const paymentHeaders = await httpClient.handlePaymentRequired(paymentRequired);
+
+    if (paymentHeaders) {
+      // SIWX auth — retry with SIWX header
+      res = await fetch(url, {
+        ...options,
+        headers: {
+          ...options.headers,
+          "Content-Type": "application/json",
+          ...paymentHeaders,
+        },
+      });
+    } else {
+      // x402 payment — create and sign payment
+      const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+      const signatureHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+
+      res = await fetch(url, {
+        ...options,
+        headers: {
+          ...options.headers,
+          "Content-Type": "application/json",
+          ...signatureHeaders,
+        },
+      });
+    }
+  }
+
+  return res;
+}
+
+// ── Trigger + Poll ──
 
 async function triggerJob(
   endpoint: string,
   body: Record<string, unknown>
 ): Promise<string> {
-  const url = `${BASE}${endpoint}`;
-  const bodyStr = JSON.stringify(body).replace(/'/g, "'\\''");
-  const cmd = `${npxPrefix()}${agentcashPath()} fetch '${url}' -m POST -b '${bodyStr}' --format json`;
-
-  const raw = execSync(cmd, {
-    encoding: "utf-8",
-    timeout: 30000,
-    maxBuffer: 10 * 1024 * 1024,
+  const url = `${BASE_URL}${endpoint}`;
+  const res = await x402Fetch(url, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 
-  // Parse response — agentcash returns JSON with a data field
-  const parsed = JSON.parse(raw);
-  const responseData = parsed?.data?.response ?? parsed?.data ?? parsed;
+  if (!res.ok && res.status !== 202) {
+    throw new Error(`Trigger failed for ${endpoint}: ${res.status} ${res.statusText}`);
+  }
 
-  // The trigger returns 202 with a token
-  const token = responseData?.token ?? responseData?.data?.token;
+  const data = await res.json();
+  const token = data?.token ?? data?.data?.token;
   if (!token) {
-    throw new Error(`No token in trigger response for ${endpoint}: ${raw.slice(0, 500)}`);
+    throw new Error(`No token in trigger response for ${endpoint}: ${JSON.stringify(data).slice(0, 300)}`);
   }
   return token;
 }
 
 async function pollJob(token: string, maxAttempts = MAX_POLL_ATTEMPTS): Promise<unknown> {
-  const url = `${BASE}/api/jobs?token=${encodeURIComponent(token)}`;
+  const url = `${BASE_URL}/api/jobs?token=${encodeURIComponent(token)}`;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const cmd = `${npxPrefix()}${agentcashPath()} fetch '${url}' --format json`;
+    const res = await x402Fetch(url, { method: "GET" });
 
-    const raw = execSync(cmd, {
-      encoding: "utf-8",
-      timeout: 15000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    if (!res.ok) {
+      throw new Error(`Poll failed: ${res.status} ${res.statusText}`);
+    }
 
-    const parsed = JSON.parse(raw);
-    const jobData = parsed?.data?.response ?? parsed?.data ?? parsed;
+    const jobData = await res.json();
     const status = jobData?.status;
 
     if (status === "finished") {
@@ -173,7 +255,6 @@ export async function searchInstagram(keyword: string): Promise<InstagramResult>
   if (cached) return cached;
 
   try {
-    // Run search and search-tags in parallel
     const [searchResult, tagsResult] = await Promise.allSettled([
       fetchEndpoint("/api/instagram/search", {
         keywords: keyword,
@@ -186,7 +267,6 @@ export async function searchInstagram(keyword: string): Promise<InstagramResult>
       }),
     ]);
 
-    // Process search posts
     let posts: InstagramPost[] = [];
     if (searchResult.status === "fulfilled") {
       const data = searchResult.value;
@@ -208,7 +288,6 @@ export async function searchInstagram(keyword: string): Promise<InstagramResult>
       }));
     }
 
-    // Process tags — merge posts and extract tag names
     let tags: string[] = [];
     if (tagsResult.status === "fulfilled") {
       const data = tagsResult.value;
@@ -218,7 +297,6 @@ export async function searchInstagram(keyword: string): Promise<InstagramResult>
           (data as Record<string, unknown>)?.data ??
           [];
 
-      // Extract hashtags from tag posts captions
       const tagPosts = (rawTagPosts as Record<string, unknown>[]).slice(0, 10);
       const tagSet = new Set<string>();
       for (const p of tagPosts) {
@@ -228,7 +306,6 @@ export async function searchInstagram(keyword: string): Promise<InstagramResult>
       }
       tags = Array.from(tagSet).slice(0, 15);
 
-      // Deduplicate and merge tag posts
       const existingIds = new Set(posts.map((p) => p.id));
       for (const p of tagPosts) {
         const id = String((p as Record<string, unknown>).id ?? (p as Record<string, unknown>).pk ?? "");
@@ -269,7 +346,6 @@ export async function searchTikTok(keyword: string): Promise<TikTokResult> {
   if (cached) return cached;
 
   try {
-    // Run search and search-music in parallel
     const [searchResult, musicResult] = await Promise.allSettled([
       fetchEndpoint("/api/tiktok/search", {
         keywords: keyword,
@@ -282,7 +358,6 @@ export async function searchTikTok(keyword: string): Promise<TikTokResult> {
       }),
     ]);
 
-    // Process search posts
     let posts: TikTokPost[] = [];
     if (searchResult.status === "fulfilled") {
       const data = searchResult.value;
@@ -307,7 +382,6 @@ export async function searchTikTok(keyword: string): Promise<TikTokResult> {
       }));
     }
 
-    // Process music/sounds
     let sounds: SoundResult[] = [];
     if (musicResult.status === "fulfilled") {
       const data = musicResult.value;
