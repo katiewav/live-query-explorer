@@ -40,8 +40,21 @@ function formatNumber(n: number): string {
 
 export function RedditCard({ post }: { post: RedditPost }) {
   const geo = estimateGeo(post.subreddit, post.title + post.selftext);
+  const href = post.permalink?.startsWith("http")
+    ? post.permalink
+    : post.url?.startsWith("http")
+    ? post.url
+    : post.permalink
+    ? `https://reddit.com${post.permalink}`
+    : undefined;
+
   return (
-    <div className="p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors">
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors group"
+    >
       <div className="flex items-center gap-2 mb-2">
         <span className="px-2 py-0.5 bg-[#ff4500]/10 text-[#ff4500] text-xs font-mono rounded">
           r/{post.subreddit}
@@ -52,8 +65,9 @@ export function RedditCard({ post }: { post: RedditPost }) {
             {geo}
           </span>
         )}
+        <svg className="w-3 h-3 text-text-muted/30 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
       </div>
-      <h3 className="text-text-primary font-mono text-sm font-medium mb-1">
+      <h3 className="text-text-primary font-mono text-sm font-medium mb-1 group-hover:text-accent transition-colors">
         {post.title}
       </h3>
       {post.selftext && (
@@ -76,22 +90,34 @@ export function RedditCard({ post }: { post: RedditPost }) {
           ))}
         </div>
       )}
-    </div>
+    </a>
   );
 }
 
 // ── Instagram Card ──
 
 export function InstagramCard({ post }: { post: InstagramPost }) {
+  const href = post.permalink?.startsWith("http")
+    ? post.permalink
+    : post.id
+    ? `https://www.instagram.com/p/${post.id}/`
+    : undefined;
+
   return (
-    <div className="p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors">
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors group"
+    >
       <div className="flex items-center gap-2 mb-2">
         <span className="px-2 py-0.5 bg-[#E1306C]/10 text-[#E1306C] text-xs font-mono rounded">
           @{post.owner_username}
         </span>
         <span className="text-text-muted text-xs font-mono">{timeAgo(post.timestamp)}</span>
+        <svg className="w-3 h-3 text-text-muted/30 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
       </div>
-      <p className="text-text-primary text-sm mb-3 line-clamp-3">
+      <p className="text-text-primary text-sm mb-3 line-clamp-3 group-hover:text-accent transition-colors">
         {post.caption.slice(0, 120)}{post.caption.length > 120 ? "..." : ""}
       </p>
       <div className="flex items-center gap-4 text-xs font-mono text-text-muted">
@@ -99,22 +125,33 @@ export function InstagramCard({ post }: { post: InstagramPost }) {
         <span>{formatNumber(post.comment_count)} comments</span>
         <span className="uppercase text-text-muted/50">{post.media_type}</span>
       </div>
-    </div>
+    </a>
   );
 }
 
 // ── TikTok Card ──
 
 export function TikTokCard({ post }: { post: TikTokPost }) {
+  const href = post.video_url
+    ?? (post.author_name && post.id
+      ? `https://www.tiktok.com/@${post.author_name}/video/${post.id}`
+      : undefined);
+
   return (
-    <div className="p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors">
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block p-4 bg-surface border border-border rounded-lg hover:border-accent/20 transition-colors group"
+    >
       <div className="flex items-center gap-2 mb-2">
         <span className="px-2 py-0.5 bg-[#00f2ea]/10 text-[#00f2ea] text-xs font-mono rounded">
           @{post.author_name}
         </span>
         <span className="text-text-muted text-xs font-mono">{timeAgo(post.create_time)}</span>
+        <svg className="w-3 h-3 text-text-muted/30 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
       </div>
-      <p className="text-text-primary text-sm mb-3 line-clamp-3">
+      <p className="text-text-primary text-sm mb-3 line-clamp-3 group-hover:text-accent transition-colors">
         {post.desc.slice(0, 120)}{post.desc.length > 120 ? "..." : ""}
       </p>
       <div className="flex items-center gap-4 text-xs font-mono text-text-muted">
@@ -127,6 +164,6 @@ export function TikTokCard({ post }: { post: TikTokPost }) {
           ♫ {post.music_title}
         </div>
       )}
-    </div>
+    </a>
   );
 }

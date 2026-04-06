@@ -412,6 +412,9 @@ export async function searchTikTok(keyword: string): Promise<TikTokResult> {
         author_name: String(p.author_name ?? p.author_username ?? p.author ?? ""),
         music_title: String(p.music_title ?? (p.music as Record<string, unknown>)?.title ?? ""),
         music_author: String(p.music_author ?? (p.music as Record<string, unknown>)?.author ?? ""),
+        video_url: p.author_username
+          ? `https://www.tiktok.com/@${p.author_username}/video/${p.id}`
+          : p.id ? `https://www.tiktok.com/video/${p.id}` : undefined,
       }));
     }
 

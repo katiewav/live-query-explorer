@@ -45,6 +45,7 @@ export interface TikTokPost {
   author_name: string;
   music_title?: string;
   music_author?: string;
+  video_url?: string;
 }
 
 export interface SoundResult {
